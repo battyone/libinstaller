@@ -1,4 +1,5 @@
 from subprocess import Popen, PIPE
+from collections import OrderedDict
 import os
 import sys
 import json
@@ -8,10 +9,12 @@ import time
 # импорт модуля 'tabulate' происходит внизу скрипта
 
 PATH = os.path.dirname(sys.argv[0])
+MODULES_PATH = os.path.join(PATH, 'Modules.txt')
 
 RED = ''
 CYAN = ''
 GREEN = ''
+WHITE = ''
 YELLOW = ''
 TABULATE = False
 
@@ -25,6 +28,23 @@ def _installed_modules():
 		print(YELLOW + '[!] Ошибка модуля \'freeze\'!')
 		return set() # Для избежания вылета программы
 
+# Сортирует словарь по длине списков в порядке спадания 
+def _sorter(dict_to_sort):
+	new_sorted_dict = OrderedDict()
+	while dict_to_sort:
+		max_len = 0
+		for value in dict_to_sort:
+			cur_len = len(dict_to_sort[value])
+			if cur_len > max_len:
+				max_len = cur_len
+				keyname = value
+		new_sorted_dict[keyname] = dict_to_sort.pop(keyname)
+	# Создание списка модулей к установке по индексу. Пустая строка нужна для сдвига модуля в списке для соотвецтвия с его номером в таблице
+	module_list = [''] 
+	for modules in new_sorted_dict.values():
+		module_list.extend(modules)
+	return new_sorted_dict, module_list
+
 # 
 def print_table():
 	if TABULATE:
@@ -34,7 +54,7 @@ def print_table():
 
 # Выводит таблицу. Так меньше кода, красивее и надежнее
 def _print_table():
-	headers = ['Раздел', 'Модули', '', '', '']
+	headers = ['Раздел', 'Библиотеки', '', '', '']
 	list_to_print = []
 	ind = 1 # Индекс товара с писке модулей
 	for key in module_dict.keys():
@@ -259,8 +279,8 @@ def installer(module_list):
 			elif 'ERROR: No matching distribution found for %s' % module in error:
 				print(CYAN + '[!] Ошибка: ' + RED + 'Модуль \'%s\' не установливается для данной версии python' % module, file = sys.stderr)
 					
-			elif 'WARNING' in error:
-				print(CYAN + '[!] Ошибка: ' + RED + 'Произошла какая-то ошибка!', file = sys.stderr)
+			elif 'WARNING: You are using pip version' in error:
+				pre_install('--upgrade pip')
 
 			else:
 				print(CYAN + '[!] Ошибка: ' + RED + 'Ошибка установки модуля: \'%s\' ' % module, file = sys.stderr)
@@ -288,7 +308,18 @@ def installer(module_list):
 		print(CYAN + '[>]' + YELLOW + ' Установлено %i модулей из %i' % (installed, len(module_list) - 1) )
 
 # Проверка версии pip
-def check_pip_version():
+def check_pip_update():
+	process  = Popen('python -m pip install --upgrade pip', stdin = PIPE, stdout = PIPE, stderr = PIPE, shell = True)
+	out, err = process.communicate()
+	if out:
+		output = out.decode('cp866')
+		if 'Requirement already up-to-date: pip' in output:
+			pip_version()
+		else:
+			return True
+
+# Проверка версии pip
+def pip_version():
 	process  = Popen('python -m pip --version', stdin = PIPE, stdout = PIPE, stderr = PIPE, shell = True)
 	out, err = process.communicate()
 	if out:
@@ -296,12 +327,7 @@ def check_pip_version():
 		# Получение версии в виде строки, отбор первой части с номером версии
 		# Разбиваем на список, конвертируем строки в числа и пакуем их в кортеж
 		version = tuple(map(int, output.split(' ')[1].split('.') ))
-		if version >= (19, 3, 1):
-			print('[i] Версия pip: %i.%i.%i' % version)
-			return 0
-		else:
-			print('[i] требуется обновить pip')
-			return 1
+		print('[i] Версия pip: %i.%i.%i' % version)
 
 # Запуск нового процеса autoinstaller.py
 def restart():
@@ -382,56 +408,42 @@ def load_modules(filename = 'None'):
 	else:
 		print(RED + '[>] Файл дампа: \'%s\', не найден!' % filename )
 
-# Загрузка расширеного пользователем словаря модулей. 
-# Если не найден файл 'Modules.txt', возвращает базовый словарь модулей 'base_module_dict'
+# Проверка могут ли быть данные загружены
+def can_be_load_data():
+	if os.path.exists(MODULES_PATH):
+		return True
+	return False
+
+# Загрузка расширеного пользователем словаря модулей.
 def load_data():
-	# Сортирует словарь по длине списков в порядке спадания 
-	def sorter(dict_to_sort):
-		new_sorted_dict = {}
-		while dict_to_sort:
-			max_len = 0
-			for value in dict_to_sort:
-				cur_len = len(dict_to_sort[value])
-				if cur_len > max_len:
-					max_len = cur_len
-					keyname = value
-			new_sorted_dict[keyname] = dict_to_sort.pop(keyname)
-		# Создание списка модулей к установке по индексу. Пустая строка нужна для сдвига модуля в списке для соотвецтвия с его номером в таблице
-		module_list = [''] 
-		for modules in new_sorted_dict.values():
-			module_list.extend(modules)
-		return new_sorted_dict, module_list
+	with open(MODULES_PATH, mode = 'r') as file:
+		return _sorter(json.load(file))
 
-	filename = os.path.join(PATH, 'Modules.txt')
-	if os.path.exists(filename):
-		with open(filename, mode = 'r') as file:
-			return sorter(json.load(file))
+# Если не найден файл 'Modules.txt', возвращает базовый словарь модулей 'base_module_dict'
+def reestablish_data():
+	print(YELLOW + '[>] Загружен базовый словарь!')
+	# Базовый словарь модулей доступных для установке
+	base_module_dict = {
+	'network':  ['wget', 'requests', 'beautifulsoup4', 'newspaper3k'],
+	'install':  ['pyinstaller', 'py2exe', 'uncompyle6', 'unpy2exe', 'cx_Freeze'],
+	'useful':   ['datetime', 'howdoi', 'uuid', 'simplejson', 'Delorean'],
+	'cmd':      ['sh', 'emoji', 'Prettytable'],
+	'other':    ['zip', 'Fuzzywuzzy'],
+	'os':       ['winshell', 'pywin32', 'virtualenv', 'pyautogui'],
+	'dataproc': ['Theano', 'matplotlib', 'pandas', 'numpy', 'scipy'],
+	'ui':       ['Kivy', 'PySide2', 'PySide', 'Eel', 'wxPython'],
+	'telegram': ['aiogram', 'pyTelegramBotAPI'],
+	'images':   ['Pillow'],
+	'neuralnet':['tensorflow', 'Keras', 'scikit-learn'],
+	'webdev':   ['Flask', 'Django', 'dash'],
+	'games':    ['pygame', 'arcade']}
 
-	else:
-		print(YELLOW + '[>] Загружен базовый словарь!')
-		# Базовый словарь модулей доступных для установке
-		base_module_dict = {
-		'network':  ['wget', 'requests', 'beautifulsoup4', 'newspaper3k'],
-		'install':  ['pyinstaller', 'py2exe', 'uncompyle6', 'unpy2exe', 'cx_Freeze'],
-		'useful':   ['datetime', 'howdoi', 'uuid', 'simplejson', 'Delorean'],
-		'cmd':      ['sh', 'emoji', 'Prettytable'],
-		'other':    ['zip', 'Fuzzywuzzy'],
-		'os':       ['winshell', 'pywin32', 'virtualenv', 'pyautogui'],
-		'dataproc': ['Theano', 'matplotlib', 'pandas', 'numpy', 'scipy'],
-		'ui':       ['Kivy', 'PySide2', 'PySide', 'Eel', 'wxPython'],
-		'telegram': ['aiogram', 'pyTelegramBotAPI'],
-		'images':   ['Pillow'],
-		'neuralnet':['tensorflow', 'Keras', 'scikit-learn'],
-		'webdev':   ['Flask', 'Django', 'dash'],
-		'games':    ['pygame', 'arcade']}
-
-		return sorter(base_module_dict)
+	return _sorter(base_module_dict)
 
 # Сохранение словаря модулей 
-def dump_dict(dict_name):
-	filename = os.path.join(PATH, 'Modules.txt')
+def save_data(dict_name):
 	try:
-		with open(filename, mode = 'w') as file:
+		with open(MODULES_PATH, mode = 'w') as file:
 			json.dump(dict_name, file)
 		print(CYAN + '[>] Данные успешно обновлены!')
 		# Обновление списка и словаря в программе
@@ -468,7 +480,7 @@ def append_module(names):
 			module_dict.setdefault(key, modules)
 			print(CYAN + '[>] Значение: ' + YELLOW + value + CYAN + ' добавлено в раздел: ' + YELLOW + key ) 
 	# Сохраняет измененный словарь после всех изменений
-	dump_dict(module_dict)	
+	save_data(module_dict)	
 
 # Удаление модулей пользователем в 'module_dict'
 def remove_module(names):
@@ -514,22 +526,20 @@ def remove_module(names):
 								del module_dict[key]
 								print(CYAN + '[>] Раздел: ' + YELLOW + key + CYAN + ' удален!')
 	# Сохраняет измененный словарь после всех изменений
-	dump_dict(module_dict)
+	save_data(module_dict)
 
 # 
 if __name__ == '__main__':
 	print('[i] Вас привецтвует libinstaller модулей 1.0.0')
-	print('[i] Ваша версия питона: %i.%i.%i' % sys.version_info[0:3] )
-	if sys.version_info[:2] == (3, 4):
-		print('[!] Внимание, на данной версии python скрипт может работать некоректно!')		
+	print('[i] Ваша версия питона: %i.%i.%i' % sys.version_info[0:3])	
 
 	if sys.version_info < (3, 0, 0):
-		print('[i] Скрипт написан на версии python: 3+, ваша версия: %i.%i.%i' % sys.version_info[0:3] )
+		print('[i] Скрипт написан на версии python: 3+, ваша версия: %i.%i.%i' % sys.version_info[0:3])
 		print('[i] Вы можете продолжить выполнение скрипта на свой страх и риск.')
-		os.system('pause')
 
 	# Запуск проверки версии pip #19.3.1 последняя
-	if check_pip_version():
+	if check_pip_update():
+		print('[i] требуется обновить pip')
 		pre_install('--upgrade pip')
 
 	try:
@@ -538,6 +548,7 @@ if __name__ == '__main__':
 		RED = Fore.RED
 		CYAN = Fore.CYAN
 		GREEN = Fore.GREEN
+		WHITE = Fore.WHITE
 		YELLOW = Fore.YELLOW
 	except:
 		print('[!] Модуль \'colorama\' не установлен!')
@@ -555,7 +566,13 @@ if __name__ == '__main__':
 			TABULATE = False
 
 	# module_dict и module_list глобальные переменные
-	module_dict, module_list = load_data()
+	# Если файл Modules.txt существует загружает данные с него
+	if can_be_load_data():
+		module_dict, module_list = load_data()
+	# Вернет базовый словарь и сохранит его
+	else:
+		module_dict, module_list = reestablish_data()
+		save_data(module_dict)
 
 	print('[i] Для получения справки введите комманду \'help\'')
 	while True:
